@@ -211,7 +211,7 @@ export function toFrontendRiskDistribution(
 }
 
 export function toFrontendDashboardActivity(
-  raw: any
+  raw: Partial<DashboardActivity>
 ): DashboardActivity {
   return {
     recentTransactions: raw.recentTransactions || [],
