@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
 import { Navigate, Outlet } from "react-router-dom";
+import {
+  clearAuthToken,
+  getAuthToken,
+} from "../../services/api";
 import { getCurrentUser } from "../../services/auth";
 
 function ProtectedRoute() {
@@ -7,7 +11,7 @@ function ProtectedRoute() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   useEffect(() => {
-    const token = localStorage.getItem("access_token");
+    const token = getAuthToken();
 
     if (!token) {
       setIsChecking(false);
@@ -19,7 +23,7 @@ function ProtectedRoute() {
         setIsAuthenticated(true);
       })
       .catch(() => {
-        localStorage.removeItem("access_token");
+        clearAuthToken();
         setIsAuthenticated(false);
       })
       .finally(() => {
