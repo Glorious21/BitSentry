@@ -1,24 +1,44 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+
+from app.alerts.service import ALERT_STATUSES, create_alert_for_risk, generate_alerts
+from app.audit.service import record_audit
+from app.bitcoin.ingestion import ingest_block, sync_to_tip
+from app.bitcoin.rpc import BitcoinRPC
+from app.cases.service import CASE_STATUSES, PRIORITIES, add_case_activity, case_payload
+from app.config import settings
 from app.database import get_db
 from app.models import (
-    Address, Alert, Block, Case, CaseActivity, CaseAlert, InvestigationNote,
-    RiskAssessment, Transaction, User, Role, Wallet, AuditLog
+    Address,
+    Alert,
+    AuditLog,
+    Block,
+    Case,
+    CaseAlert,
+    InvestigationNote,
+    RiskAssessment,
+    Role,
+    Transaction,
+    User,
+    Wallet,
 )
-from app.schemas import (
-    AddressLabelUpdate, AlertStatusUpdate, CaseCreate, CaseStatusUpdate,
-    LoginRequest, NoteCreate, RiskOut, TokenOut, TransactionOut, UserCreate,
-    UserOut, WalletCreate
-)
-from app.security import get_current_user, require_permission, hash_password, verify_password, create_access_token
-from app.bitcoin.rpc import BitcoinRPC
-from app.bitcoin.ingestion import ingest_block, sync_to_tip
 from app.risk.service import assess_transaction
-from app.alerts.service import generate_alerts, create_alert_for_risk, ALERT_STATUSES
-from app.cases.service import add_case_activity, case_payload, CASE_STATUSES, PRIORITIES
-from app.audit.service import record_audit
-from app.config import settings
+from app.schemas import (
+    AddressLabelUpdate,
+    AlertStatusUpdate,
+    CaseCreate,
+    CaseStatusUpdate,
+    LoginRequest,
+    NoteCreate,
+    RiskOut,
+    TokenOut,
+    TransactionOut,
+    UserCreate,
+    UserOut,
+    WalletCreate,
+)
+from app.security import create_access_token, get_current_user, hash_password, require_permission, verify_password
 
 router = APIRouter(prefix="/api/v1")
 
@@ -33,11 +53,19 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
 @router.get("/auth/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
-    return {"id": user.id, "email": user.email, "full_name": user.full_name, "roles": [r.name for r in user.roles], "is_active": user.is_active}
+    return {
+        "id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "roles": [r.name for r in user.roles],
+        "is_active": user.is_active,
+    }
 
 
 @router.post("/users", response_model=UserOut)
-def create_user(payload: UserCreate, db: Session = Depends(get_db), actor: User = Depends(require_permission("users:write"))):
+def create_user(
+    payload: UserCreate, db: Session = Depends(get_db), actor: User = Depends(require_permission("users:write"))
+):
     email = payload.email.lower().strip()
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(status_code=409, detail="Email already exists")
@@ -50,14 +78,26 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db), actor: User 
     db.commit()
     db.refresh(user)
     record_audit(db, actor.id, "USER_CREATED", "user", user.id, {"email": user.email})
-    return {"id": user.id, "email": user.email, "full_name": user.full_name, "roles": [role.name], "is_active": user.is_active}
+    return {
+        "id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "roles": [role.name],
+        "is_active": user.is_active,
+    }
 
 
 @router.get("/bitcoin/status")
 def bitcoin_status(_: User = Depends(require_permission("bitcoin:read"))):
     try:
         info = BitcoinRPC().get_blockchain_info()
-        return {"connected": True, "network": info.get("chain"), "blocks": info.get("blocks"), "headers": info.get("headers"), "verification_progress": info.get("verificationprogress")}
+        return {
+            "connected": True,
+            "network": info.get("chain"),
+            "blocks": info.get("blocks"),
+            "headers": info.get("headers"),
+            "verification_progress": info.get("verificationprogress"),
+        }
     except Exception as exc:
         return {"connected": False, "error": str(exc)}
 
@@ -74,7 +114,11 @@ def ingest(height: int, db: Session = Depends(get_db), actor: User = Depends(req
 
 
 @router.post("/bitcoin/ingest/sync")
-def sync_blocks(start_height: int | None = None, db: Session = Depends(get_db), actor: User = Depends(require_permission("bitcoin:write"))):
+def sync_blocks(
+    start_height: int | None = None,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("bitcoin:write")),
+):
     try:
         result = sync_to_tip(db, start_height)
     except Exception as exc:
@@ -85,18 +129,31 @@ def sync_blocks(start_height: int | None = None, db: Session = Depends(get_db), 
 
 
 @router.get("/blocks")
-def list_blocks(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), _: User = Depends(require_permission("bitcoin:read"))):
+def list_blocks(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("bitcoin:read")),
+):
     rows = db.scalars(select(Block).order_by(Block.height.desc()).limit(limit)).all()
-    return [{"id": b.id, "hash": b.hash, "height": b.height, "timestamp": b.timestamp, "previous_hash": b.previous_hash} for b in rows]
+    return [
+        {"id": b.id, "hash": b.hash, "height": b.height, "timestamp": b.timestamp, "previous_hash": b.previous_hash}
+        for b in rows
+    ]
 
 
 @router.get("/transactions", response_model=list[TransactionOut])
-def list_transactions(limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db), _: User = Depends(require_permission("transactions:read"))):
+def list_transactions(
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("transactions:read")),
+):
     return db.scalars(select(Transaction).order_by(Transaction.timestamp.desc()).limit(limit)).all()
 
 
 @router.get("/transactions/{transaction_id}", response_model=TransactionOut)
-def get_transaction(transaction_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("transactions:read"))):
+def get_transaction(
+    transaction_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("transactions:read"))
+):
     tx = db.get(Transaction, transaction_id)
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -104,7 +161,9 @@ def get_transaction(transaction_id: int, db: Session = Depends(get_db), _: User 
 
 
 @router.get("/transactions/{transaction_id}/risk", response_model=RiskOut)
-def transaction_risk(transaction_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("risk:read"))):
+def transaction_risk(
+    transaction_id: int, db: Session = Depends(get_db), _: User = Depends(require_permission("risk:read"))
+):
     tx = db.get(Transaction, transaction_id)
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -120,7 +179,9 @@ def transaction_risk(transaction_id: int, db: Session = Depends(get_db), _: User
 
 
 @router.post("/transactions/{transaction_id}/analyze", response_model=RiskOut)
-def analyze_transaction(transaction_id: int, db: Session = Depends(get_db), actor: User = Depends(require_permission("risk:read"))):
+def analyze_transaction(
+    transaction_id: int, db: Session = Depends(get_db), actor: User = Depends(require_permission("risk:read"))
+):
     tx = db.get(Transaction, transaction_id)
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -129,12 +190,31 @@ def analyze_transaction(transaction_id: int, db: Session = Depends(get_db), acto
         alert = create_alert_for_risk(db, assessment)
         db.commit()
         if alert:
-            record_audit(db, actor.id, "RISK_ANALYZED", "transaction", tx.id, {"score": assessment.score, "level": assessment.level})
-    return {"transaction_id": tx.id, "score": assessment.score, "level": assessment.level, "indicators": assessment.indicators, "explanation": assessment.explanation, "assessed_at": assessment.assessed_at}
+            record_audit(
+                db,
+                actor.id,
+                "RISK_ANALYZED",
+                "transaction",
+                tx.id,
+                {"score": assessment.score, "level": assessment.level},
+            )
+    return {
+        "transaction_id": tx.id,
+        "score": assessment.score,
+        "level": assessment.level,
+        "indicators": assessment.indicators,
+        "explanation": assessment.explanation,
+        "assessed_at": assessment.assessed_at,
+    }
 
 
 @router.get("/alerts")
-def list_alerts(status: str | None = None, limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db), _: User = Depends(require_permission("alerts:read"))):
+def list_alerts(
+    status: str | None = None,
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("alerts:read")),
+):
     stmt = select(Alert).order_by(Alert.created_at.desc()).limit(limit)
     if status:
         stmt = stmt.where(Alert.status == status)
@@ -150,7 +230,12 @@ def get_alert(alert_id: int, db: Session = Depends(get_db), _: User = Depends(re
 
 
 @router.patch("/alerts/{alert_id}/status")
-def update_alert_status(alert_id: int, payload: AlertStatusUpdate, db: Session = Depends(get_db), actor: User = Depends(require_permission("alerts:write"))):
+def update_alert_status(
+    alert_id: int,
+    payload: AlertStatusUpdate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("alerts:write")),
+):
     if payload.status not in ALERT_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid alert status")
     row = db.get(Alert, alert_id)
@@ -170,12 +255,20 @@ def generate_alerts_endpoint(db: Session = Depends(get_db), actor: User = Depend
 
 
 @router.post("/cases")
-def create_case(payload: CaseCreate, db: Session = Depends(get_db), actor: User = Depends(require_permission("cases:write"))):
+def create_case(
+    payload: CaseCreate, db: Session = Depends(get_db), actor: User = Depends(require_permission("cases:write"))
+):
     if payload.priority not in PRIORITIES:
         raise HTTPException(status_code=400, detail="Invalid priority")
     if payload.assigned_to is not None and not db.get(User, payload.assigned_to):
         raise HTTPException(status_code=400, detail="Assigned user not found")
-    row = Case(title=payload.title, description=payload.description, priority=payload.priority, assigned_to=payload.assigned_to, created_by=actor.id)
+    row = Case(
+        title=payload.title,
+        description=payload.description,
+        priority=payload.priority,
+        assigned_to=payload.assigned_to,
+        created_by=actor.id,
+    )
     db.add(row)
     db.flush()
     add_case_activity(db, row.id, actor.id, "CASE_CREATED")
@@ -199,7 +292,9 @@ def get_case(case_id: int, db: Session = Depends(get_db), _: User = Depends(requ
 
 
 @router.post("/cases/{case_id}/alerts/{alert_id}")
-def attach_alert(case_id: int, alert_id: int, db: Session = Depends(get_db), actor: User = Depends(require_permission("cases:write"))):
+def attach_alert(
+    case_id: int, alert_id: int, db: Session = Depends(get_db), actor: User = Depends(require_permission("cases:write"))
+):
     if not db.get(Case, case_id) or not db.get(Alert, alert_id):
         raise HTTPException(status_code=404, detail="Case or alert not found")
     existing = db.scalar(select(CaseAlert).where(CaseAlert.case_id == case_id, CaseAlert.alert_id == alert_id))
@@ -212,7 +307,12 @@ def attach_alert(case_id: int, alert_id: int, db: Session = Depends(get_db), act
 
 
 @router.post("/cases/{case_id}/notes")
-def add_note(case_id: int, payload: NoteCreate, db: Session = Depends(get_db), actor: User = Depends(require_permission("cases:write"))):
+def add_note(
+    case_id: int,
+    payload: NoteCreate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("cases:write")),
+):
     if not db.get(Case, case_id):
         raise HTTPException(status_code=404, detail="Case not found")
     note = InvestigationNote(case_id=case_id, author_id=actor.id, note=payload.note)
@@ -225,7 +325,12 @@ def add_note(case_id: int, payload: NoteCreate, db: Session = Depends(get_db), a
 
 
 @router.patch("/cases/{case_id}/status")
-def update_case_status(case_id: int, payload: CaseStatusUpdate, db: Session = Depends(get_db), actor: User = Depends(require_permission("cases:write"))):
+def update_case_status(
+    case_id: int,
+    payload: CaseStatusUpdate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("cases:write")),
+):
     if payload.status not in CASE_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid case status")
     row = db.get(Case, case_id)
@@ -245,7 +350,12 @@ def list_addresses(db: Session = Depends(get_db), _: User = Depends(require_perm
 
 
 @router.patch("/addresses/{address_id}")
-def update_address(address_id: int, payload: AddressLabelUpdate, db: Session = Depends(get_db), actor: User = Depends(require_permission("addresses:write"))):
+def update_address(
+    address_id: int,
+    payload: AddressLabelUpdate,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_permission("addresses:write")),
+):
     row = db.get(Address, address_id)
     if not row:
         raise HTTPException(status_code=404, detail="Address not found")
@@ -261,7 +371,9 @@ def update_address(address_id: int, payload: AddressLabelUpdate, db: Session = D
 
 
 @router.post("/wallets")
-def create_wallet(payload: WalletCreate, db: Session = Depends(get_db), actor: User = Depends(require_permission("wallets:write"))):
+def create_wallet(
+    payload: WalletCreate, db: Session = Depends(get_db), actor: User = Depends(require_permission("wallets:write"))
+):
     if db.scalar(select(Wallet).where(Wallet.address == payload.address)):
         raise HTTPException(status_code=409, detail="Wallet address already registered")
     row = Wallet(name=payload.name, address=payload.address, label=payload.label)
@@ -278,7 +390,11 @@ def list_wallets(db: Session = Depends(get_db), _: User = Depends(require_permis
 
 
 @router.get("/audit")
-def list_audit_logs(limit: int = Query(200, ge=1, le=500), db: Session = Depends(get_db), _: User = Depends(require_permission("audit:read"))):
+def list_audit_logs(
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("audit:read")),
+):
     return db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit)).all()
 
 
@@ -286,9 +402,15 @@ def list_audit_logs(limit: int = Query(200, ge=1, le=500), db: Session = Depends
 def dashboard_summary(db: Session = Depends(get_db), _: User = Depends(require_permission("transactions:read"))):
     total_transactions = db.scalar(select(func.count(Transaction.id))) or 0
     total_alerts = db.scalar(select(func.count(Alert.id))) or 0
-    open_alerts = db.scalar(select(func.count(Alert.id)).where(Alert.status.in_(["OPEN", "IN_REVIEW", "ESCALATED"]))) or 0
-    high_risk = db.scalar(select(func.count(RiskAssessment.id)).where(RiskAssessment.level.in_(["HIGH", "CRITICAL"]))) or 0
-    open_cases = db.scalar(select(func.count(Case.id)).where(Case.status.in_(["OPEN", "IN_PROGRESS", "ESCALATED"]))) or 0
+    open_alerts = (
+        db.scalar(select(func.count(Alert.id)).where(Alert.status.in_(["OPEN", "IN_REVIEW", "ESCALATED"]))) or 0
+    )
+    high_risk = (
+        db.scalar(select(func.count(RiskAssessment.id)).where(RiskAssessment.level.in_(["HIGH", "CRITICAL"]))) or 0
+    )
+    open_cases = (
+        db.scalar(select(func.count(Case.id)).where(Case.status.in_(["OPEN", "IN_PROGRESS", "ESCALATED"]))) or 0
+    )
     return {
         "transactions": total_transactions,
         "transactions_monitored": total_transactions,
@@ -302,12 +424,12 @@ def dashboard_summary(db: Session = Depends(get_db), _: User = Depends(require_p
 
 
 @router.get("/dashboard/risk-distribution")
-def dashboard_risk_distribution(db: Session = Depends(get_db), _: User = Depends(require_permission("transactions:read"))):
+def dashboard_risk_distribution(
+    db: Session = Depends(get_db), _: User = Depends(require_permission("transactions:read"))
+):
     levels = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
     counts = {lvl: 0 for lvl in levels}
-    rows = db.execute(
-        select(RiskAssessment.level, func.count(RiskAssessment.id)).group_by(RiskAssessment.level)
-    ).all()
+    rows = db.execute(select(RiskAssessment.level, func.count(RiskAssessment.id)).group_by(RiskAssessment.level)).all()
     for lvl, cnt in rows:
         if lvl and lvl.upper() in counts:
             counts[lvl.upper()] = cnt
@@ -323,14 +445,16 @@ def dashboard_activity(db: Session = Depends(get_db), _: User = Depends(require_
 
     formatted_txs = []
     for tx in recent_txs:
-        formatted_txs.append({
-            "id": str(tx.id),
-            "txId": tx.txid,
-            "amountBtc": round((tx.total_output_sats or 0) / 100_000_000, 8),
-            "riskLevel": "low",
-            "timestamp": tx.timestamp.isoformat() if tx.timestamp else "",
-            "activityType": "transaction",
-        })
+        formatted_txs.append(
+            {
+                "id": str(tx.id),
+                "txId": tx.txid,
+                "amountBtc": round((tx.total_output_sats or 0) / 100_000_000, 8),
+                "riskLevel": "low",
+                "timestamp": tx.timestamp.isoformat() if tx.timestamp else "",
+                "activityType": "transaction",
+            }
+        )
 
     formatted_alerts = []
     for alert in recent_alerts:
@@ -341,13 +465,15 @@ def dashboard_activity(db: Session = Depends(get_db), _: User = Depends(require_
                 indicator_label = first_ind.get("name") or first_ind.get("code") or indicator_label
             elif isinstance(first_ind, str):
                 indicator_label = first_ind
-        formatted_alerts.append({
-            "id": str(alert.id),
-            "riskLevel": (alert.risk_level or "low").lower(),
-            "indicator": indicator_label,
-            "status": "new" if alert.status == "OPEN" else alert.status.lower(),
-            "createdAt": alert.created_at.isoformat() if alert.created_at else "",
-        })
+        formatted_alerts.append(
+            {
+                "id": str(alert.id),
+                "riskLevel": (alert.risk_level or "low").lower(),
+                "indicator": indicator_label,
+                "status": "new" if alert.status == "OPEN" else alert.status.lower(),
+                "createdAt": alert.created_at.isoformat() if alert.created_at else "",
+            }
+        )
 
     return {
         "recentTransactions": formatted_txs,

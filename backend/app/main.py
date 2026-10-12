@@ -1,11 +1,13 @@
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.config import settings
-from app.database import Base, engine, SessionLocal
+
 from app.auth.service import seed_auth
-from app.rules.service import seed_rules
+from app.config import settings
+from app.database import Base, SessionLocal, engine
 from app.routers import router
+from app.rules.service import seed_rules
 
 
 @asynccontextmanager
